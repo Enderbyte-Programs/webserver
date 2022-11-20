@@ -3,6 +3,7 @@ import json
 import datetime
 import sys
 import os
+import shlex
 
 SERVER_IP = "216.232.200.238:10223"
 def retrievedasp(name,code,retrconlen=True):
@@ -32,6 +33,7 @@ class MyTCPHandler(http.server.BaseHTTPRequestHandler):
     """
 
     def handle(self):
+        global ACCOUNTS
         try:
             self.data = self.request.recv(8192).strip()
             # self.request is the TCP socket connected to the client
@@ -101,6 +103,56 @@ class MyTCPHandler(http.server.BaseHTTPRequestHandler):
                         budict["ulist"].append({"ip":self.client_address[0],"joinlist":[str(datetime.datetime.now())],"jtimes":1,"oses":[buos],"versions":[buver]})
                     with open("bu.json","w+") as f:
                         f.write(json.dumps(budict))
+            elif "msgs" in str(self.data):
+                try:
+                    print(str(self.data).replace("\'",""))
+                    msdata = shlex.split(str(self.data).replace("\'",""))
+                    print(msdata)
+                    if msdata[1] == "newacc":
+                        if msdata[2] in ACCOUNTS.keys():
+                             #Account already exists
+                            self.request.sendall(b"ERROR 800")
+                        else:
+                            ACCOUNTS[msdata[2]] = {}
+                            ACCOUNTS[msdata[2]]["pwd"] = msdata[3]
+                            ACCOUNTS[msdata[2]]["activeip"] = self.client_address[0]#This will be updated with new logins
+                            ACCOUNTS[msdata[2]]["loggedin"] = False
+                            self.request.sendall(b"OK 200")
+                            with open("accounts.json","w+") as f:
+                                f.write(json.dumps(ACCOUNTS))
+                    elif msdata[1] == "login":
+                        if msdata[2] in ACCOUNTS.keys():
+                            if ACCOUNTS[msdata[2]]["pwd"] == msdata[3]:
+                                ACCOUNTS[msdata[2]]["activeip"] = self.client_address[0]#This will be updated with new logins
+                                ACCOUNTS[msdata[2]]["loggedin"] = True
+                                with open("accounts.json","w+") as f:
+                                    f.write(json.dumps(ACCOUNTS))
+                                self.request.sendall(b"OK 200")
+                            else:
+                                self.request.sendall(b"ERROR 802")#Wrong password
+                        else:
+                            self.request.sendall(b"ERROR 801")#Account not found
+                    elif msdata[1] == "logoff":
+                        if msdata[2] in ACCOUNTS.keys():
+                            if ACCOUNTS[msdata[2]]["pwd"] == msdata[3]:
+                                ACCOUNTS[msdata[2]]["loggedin"] = False
+                                self.request.sendall(b"OK 200")
+                            else:
+                                self.request.sendall(b"ERROR 802")#Wrong password
+                        else:
+                            self.request.sendall(b"ERROR 801")#Account not found
+                    elif msdata[1] == "send":
+                        acsendname = self.client_address[0]
+                        for ac in ACCOUNTS.keys():
+                            if ACCOUNTS[ac]["activeip"] == self.client_address[0] and ACCOUNTS[ac]["loggedin"]:
+                                acsendname = ac
+                                break
+                        msdata = [m.replace("\\n","\n") for m in msdata]
+                        MESSAGES.append(f'({datetime.datetime.now()}) [{acsendname}] {" ".join(msdata[2:])}')
+                        with open("messages.txt","w+") as f:
+                            f.write("\n".join(MESSAGES))
+                except Exception as e:
+                     self.request.sendall(f"ERROR 805 {str(e)}".encode("utf-8"))
             else:
                 
                 self.apidat = self.data.split(b" ")[1].decode("utf-8")
@@ -125,7 +177,19 @@ class MyTCPHandler(http.server.BaseHTTPRequestHandler):
                         LDATA += f"<tr>{fs[i]}{sz[i]}</tr>"
                     MSG = MSG.replace("$$DATA",LDATA)
                     self.request.sendall(MSG.encode("utf-8"))
-
+                elif self.apidat == "/messages":
+                    ucl = ""
+                    for message in MESSAGES:
+                        ucl += f"<p>{message}</p>\n"
+                    mdata = retrievedasp("msg.html",200,False)
+                    self.request.sendall(mdata.replace("$DATA",ucl).encode("utf-8"))
+                elif self.apidat == "/messages/send":
+                    raise NotImplementedError("NOT YET")
+                elif "/messages/send/" in self.apidat:
+                    MESSAGES.append(f"({datetime.datetime.now()}) [{self.client_address[0]}] {'/'.join(self.apidat.split('/')[3:])}")
+                    with open("messages.txt","w+") as f:
+                        f.write("\n".join(MESSAGES))
+                    self.request.sendall(retrievedasp("msgconf.html",200,True).encode("utf-8"))
                 elif "/download/" in self.apidat:
                     reqfile = self.apidat.split("/")[-1]
                     if os.path.isfile(os.getcwd() + "/archives/" + reqfile):
@@ -168,6 +232,11 @@ if __name__ == "__main__":
             
     except:
         budict = {"ulist":[]}
+    with open("accounts.json") as f:
+        ACCOUNTS = json.load(f)
+    with open("messages.txt") as f:
+        MESSAGES = f.readlines()
+
     # Create the server, binding to localhost on port 9999
     server = http.server.ThreadingHTTPServer((HOST, PORT), MyTCPHandler)
 
